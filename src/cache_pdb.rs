@@ -12,12 +12,13 @@ pub fn get_rva(guid: String) -> u32 {
     // .rva is arbitrary, im storing a single u32 so there isnt exactly a good extension for this
     let pdbpath = dir.join(guid.clone() + ".rva");
     if pdbpath.exists() {
-        println!("PDB cached. Reading...");
+        println!("PDB cached. Reading from: {}", pdbpath.display());
         let file = fs::read(pdbpath).unwrap();
         u32::from_be_bytes(file.try_into().unwrap())
     } else {
         println!("PDB not found. Fetching...");
         let url = fetch_pdb::build_url(guid);
+        println!("PDB download URL: {} | cache path: {}", url, pdbpath.display());
         let pdbfile = fetch(url);
         println!("Fetched! Parsing...");
         let rva = parse_pdb(pdbfile);
