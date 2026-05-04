@@ -6,5 +6,6 @@ USAGE:
 SUBCOMMANDS:
     <no subcommand> Alias for inject subcommand
     inject          Injects into the running explorer.exe process's memory to remove the watermark. Does not persist if explorer.exe or system is restarted.
+    download-pdb    Downloads and caches shell32.pdb for an old GUID from a cache filename
     help            Shows this menu
     about           Shows some information about UWD2
