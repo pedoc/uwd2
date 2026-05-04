@@ -72,15 +72,68 @@ fn main() {
             }
             Err(e) => eprintln!("Failed listing cache: {e}"),
         },
-        Some("inject-cache") => match args.get(2) {
-            None => eprintln!("Usage: {} inject-cache <cache-file>", prog()),
-            Some(name) => match read_cached(name.as_str()) {
-                Ok(rva) => unsafe {
-                    inject::inject(rva);
-                    inject::refresh();
-                },
-                Err(e) => eprintln!("Failed to read cache entry: {e}"),
+        Some("verify-cache") => match args.get(2) {
+            None => eprintln!("Usage: {} verify-cache <cache-file>", prog()),
+            Some(name) => match cache_pdb::read_meta(name.as_str()) {
+                Ok((rva, sig)) => {
+                    // read process bytes at rva and compare
+                    match cache_pdb::capture_process_bytes(rva, sig.len()) {
+                        Ok(cur) => {
+                            if cur == sig {
+                                println!("Verification OK: in-memory bytes match cached signature");
+                            } else {
+                                println!("Verification FAILED: bytes differ");
+                            }
+                        }
+                        Err(e) => eprintln!("Failed to read process memory: {e}"),
+                    }
+                }
+                Err(e) => eprintln!("Failed to read meta: {e}"),
             },
+        },
+        Some("find-in-file") => match args.get(2) {
+            None => eprintln!("Usage: {} find-in-file <cache-file>", prog()),
+            Some(name) => match cache_pdb::read_meta(name.as_str()) {
+                Ok((_rva, sig)) => match cache_pdb::find_signature_in_file(&sig) {
+                    Ok(cands) => {
+                        if cands.is_empty() {
+                            println!("No candidates found in file");
+                        } else {
+                            println!("Candidates (RVAs):");
+                            for c in cands {
+                                println!(" - 0x{c:08x}");
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("Search failed: {e}"),
+                },
+                Err(e) => eprintln!("Failed to read meta: {e}"),
+            },
+        },
+        Some("inject-cache") => match args.get(2) {
+            None => eprintln!("Usage: {} inject-cache <cache-file> [rva-hex]", prog()),
+            Some(name) => {
+                // if user provided optional rva override, parse it
+                match args.get(3) {
+                    Some(override_rva) => {
+                        let parsed = if override_rva.starts_with("0x") { u32::from_str_radix(&override_rva[2..], 16) } else { override_rva.parse() };
+                        match parsed {
+                            Ok(rva) => unsafe {
+                                inject::inject(rva);
+                                inject::refresh();
+                            },
+                            Err(_) => eprintln!("Invalid RVA value"),
+                        }
+                    }
+                    None => match read_cached(name.as_str()) {
+                        Ok(rva) => unsafe {
+                            inject::inject(rva);
+                            inject::refresh();
+                        },
+                        Err(e) => eprintln!("Failed to read cache entry: {e}"),
+                    },
+                }
+            }
         },
         Some(err) => eprintln!("Invalid argument `{err}`. Run `{} help` to see all commands.", prog()),
     }
