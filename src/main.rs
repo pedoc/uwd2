@@ -1,6 +1,6 @@
 use std::env;
 
-use crate::cache_pdb::get_rva;
+use crate::cache_pdb::{get_rva, list_cached, read_cached};
 use crate::explorer_modinfo::get_guid;
 
 mod cache_pdb;
@@ -34,9 +34,16 @@ fn rva() -> u32 {
     unsafe {
         guid = get_guid();
     }
-    let rva = get_rva(guid);
-    println!("RVA is {rva:#x}");
-    rva
+    match get_rva(guid) {
+        Ok(rva) => {
+            println!("RVA is {rva:#x}");
+            rva
+        }
+        Err(e) => {
+            eprintln!("Error obtaining RVA: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn inject() {
@@ -46,20 +53,35 @@ fn inject() {
     }
 }
 fn main() {
-    match env::args().collect::<Vec<String>>().get(1) {
+    let args = env::args().collect::<Vec<String>>();
+    match args.get(1).map(|s| s.as_str()) {
         None => inject(),
-        Some(arg) => match arg.as_str() {
-            "inject" => inject(),
-            "help" => help(),
-            "about" => {
-                println!(include_str!("../about.txt"), env!("CARGO_PKG_VERSION"))
+        Some("inject") => inject(),
+        Some("help") => help(),
+        Some("about") => println!(include_str!("../about.txt"), env!("CARGO_PKG_VERSION")),
+        Some("list-cache") => match list_cached() {
+            Ok(list) => {
+                if list.is_empty() {
+                    println!("No cached entries found.");
+                } else {
+                    println!("Cached entries:");
+                    for n in list {
+                        println!(" - {}", n);
+                    }
+                }
             }
-            err => {
-                eprintln!(
-                    "Invalid argument `{err}`. Run `{} help` to see all commands.",
-                    prog()
-                )
-            }
+            Err(e) => eprintln!("Failed listing cache: {e}"),
         },
+        Some("inject-cache") => match args.get(2) {
+            None => eprintln!("Usage: {} inject-cache <cache-file>", prog()),
+            Some(name) => match read_cached(name.as_str()) {
+                Ok(rva) => unsafe {
+                    inject::inject(rva);
+                    inject::refresh();
+                },
+                Err(e) => eprintln!("Failed to read cache entry: {e}"),
+            },
+        },
+        Some(err) => eprintln!("Invalid argument `{err}`. Run `{} help` to see all commands.", prog()),
     }
 }
