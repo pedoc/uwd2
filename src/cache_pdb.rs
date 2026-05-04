@@ -15,6 +15,16 @@ use windows::core::imp::CloseHandle;
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use crate::explorer_modinfo::{get_explorer_handle, get_shell32_offset};
 
+const SIGNATURE_LEN: usize = 16;
+const TAIL_LEN: usize = 16;
+
+#[derive(Clone, Debug)]
+pub struct CacheMeta {
+    pub rva: u32,
+    pub head: Vec<u8>,
+    pub tail: Vec<u8>,
+}
+
 // Get RVA for a guid. Returns Result so callers can handle failures (e.g., PDB 404)
 pub fn get_rva(guid: String) -> Result<u32, String> {
     let dir = data_dir();
@@ -61,13 +71,15 @@ pub fn get_rva(guid: String) -> Result<u32, String> {
     fs::write(pdbpath, rva.to_be_bytes()).map_err(|e| format!("Failed writing rva cache: {e}"))?;
     // attempt to capture signature bytes at the target address in explorer process
     // to allow later verification or relocation scanning
-    let sig_bytes = capture_process_bytes(rva, 16).unwrap_or_default();
+    let sig_bytes = capture_process_bytes(rva, SIGNATURE_LEN + TAIL_LEN).unwrap_or_default();
     let meta_path = dir.join(guid.clone() + ".meta");
     if let Ok(mut f) = File::create(&meta_path) {
-        // write rva as hex on first line, then signature as hex on second line
+        // write rva as hex on first line, then head and tail signatures
         let _ = writeln!(f, "0x{rva:08x}");
-        let hexsig: String = sig_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-        let _ = writeln!(f, "{hexsig}");
+        let head: String = sig_bytes.iter().take(SIGNATURE_LEN).map(|b| format!("{:02x}", b)).collect();
+        let tail: String = sig_bytes.iter().skip(SIGNATURE_LEN).take(TAIL_LEN).map(|b| format!("{:02x}", b)).collect();
+        let _ = writeln!(f, "{head}");
+        let _ = writeln!(f, "{tail}");
     }
     println!("Cached!");
     Ok(rva)
@@ -119,7 +131,7 @@ pub fn capture_process_bytes(rva: u32, len: usize) -> Result<Vec<u8>, String> {
 }
 
 // read meta for cache entry (expects name like "GUID.rva")
-pub fn read_meta(name: &str) -> Result<(u32, Vec<u8>), String> {
+pub fn read_meta(name: &str) -> Result<CacheMeta, String> {
     let dir = data_dir();
     let stem = if name.ends_with(".rva") { &name[..name.len()-4] } else { name };
     let path = dir.join(format!("{}.meta", stem));
@@ -130,17 +142,14 @@ pub fn read_meta(name: &str) -> Result<(u32, Vec<u8>), String> {
     File::open(path).map_err(|e| format!("Failed opening meta: {:?}", e))?.read_to_string(&mut s).map_err(|e| format!("Failed reading meta: {:?}", e))?;
     let mut lines = s.lines();
     let rva_line = lines.next().ok_or_else(|| "Meta missing rva line".to_string())?;
-    let sig_line = lines.next().unwrap_or("");
+    let head_line = lines.next().unwrap_or("");
+    let tail_line = lines.next().unwrap_or("");
     let rva = if rva_line.starts_with("0x") { u32::from_str_radix(&rva_line[2..], 16).map_err(|e| format!("Bad rva in meta: {:?}", e))? } else { rva_line.parse::<u32>().map_err(|e| format!("Bad rva in meta: {:?}", e))? };
-    let mut sig = Vec::new();
-    let mut i = 0;
-    while i + 1 <= sig_line.len() {
-        if i+2 > sig_line.len() { break; }
-        let byte = u8::from_str_radix(&sig_line[i..i+2], 16).map_err(|e| format!("Bad sig hex: {:?}", e))?;
-        sig.push(byte);
-        i += 2;
-    }
-    Ok((rva, sig))
+    Ok(CacheMeta {
+        rva,
+        head: hex_to_bytes(head_line)?,
+        tail: hex_to_bytes(tail_line).unwrap_or_default(),
+    })
 }
 
 // search for signature bytes in the on-disk shell32.dll and report candidate RVAs (using PE section mapping)
@@ -191,4 +200,45 @@ pub fn find_signature_in_path(sig: &[u8], path: &str) -> Result<Vec<u32>, String
         }
     }
     Ok(candidates)
+}
+
+pub fn find_strong_signature_candidates(meta: &CacheMeta, path: &str) -> Result<Vec<u32>, String> {
+    let head_matches = find_signature_in_path(&meta.head, path)?;
+    if meta.tail.is_empty() {
+        return Ok(head_matches);
+    }
+
+    let mut confirmed = Vec::new();
+    for rva in head_matches {
+        let bytes = read_bytes_from_file(path, rva as usize, meta.head.len() + meta.tail.len())?;
+        if bytes.len() >= meta.head.len() + meta.tail.len()
+            && bytes[..meta.head.len()] == meta.head[..]
+            && bytes[meta.head.len()..meta.head.len() + meta.tail.len()] == meta.tail[..]
+        {
+            confirmed.push(rva);
+        }
+    }
+    Ok(confirmed)
+}
+
+pub fn read_bytes_from_file(path: &str, offset: usize, len: usize) -> Result<Vec<u8>, String> {
+    let mut f = File::open(path).map_err(|e| format!("Failed opening {}: {:?}", path, e))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).map_err(|e| format!("Failed reading {}: {:?}", path, e))?;
+    if offset >= buf.len() {
+        return Ok(Vec::new());
+    }
+    let end = offset.saturating_add(len).min(buf.len());
+    Ok(buf[offset..end].to_vec())
+}
+
+fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < hex.len() {
+        let byte = u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| format!("Bad sig hex: {:?}", e))?;
+        out.push(byte);
+        i += 2;
+    }
+    Ok(out)
 }

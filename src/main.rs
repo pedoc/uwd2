@@ -107,12 +107,16 @@ fn main() {
         Some("verify-cache") => match args.get(2) {
             None => eprintln!("Usage: {} verify-cache <cache-file>", prog()),
             Some(name) => match cache_pdb::read_meta(name.as_str()) {
-                Ok((rva, sig)) => {
+                Ok(meta) => {
                     // read process bytes at rva and compare
-                    match cache_pdb::capture_process_bytes(rva, sig.len()) {
+                    let len = meta.head.len() + meta.tail.len();
+                    match cache_pdb::capture_process_bytes(meta.rva, len) {
                         Ok(cur) => {
-                            if cur == sig {
-                                println!("Verification OK: in-memory bytes match cached signature");
+                            if cur.len() >= meta.head.len()
+                                && cur[..meta.head.len()] == meta.head[..]
+                                && (meta.tail.is_empty() || cur[meta.head.len()..] == meta.tail[..])
+                            {
+                                println!("Verification OK: in-memory bytes match cached anchors");
                             } else {
                                 println!("Verification FAILED: bytes differ");
                             }
@@ -126,7 +130,7 @@ fn main() {
         Some("find-in-file") => match args.get(2) {
             None => eprintln!("Usage: {} find-in-file <cache-file>", prog()),
             Some(name) => match cache_pdb::read_meta(name.as_str()) {
-                Ok((_rva, sig)) => match cache_pdb::find_signature_in_file(&sig) {
+                Ok(meta) => match cache_pdb::find_strong_signature_candidates(&meta, constants::SHELL32_PATH) {
                     Ok(cands) => {
                         if cands.is_empty() {
                             println!("No candidates found in file");
@@ -170,9 +174,9 @@ fn main() {
         Some("scan-and-inject") => match args.get(2) {
             None => eprintln!("Usage: {} scan-and-inject <cache-file>", prog()),
             Some(name) => match cache_pdb::read_meta(name.as_str()) {
-                Ok((_old_rva, sig)) => {
+                Ok(meta) => {
                     println!("Searching for signature candidates in {}...", constants::SHELL32_PATH);
-                    match cache_pdb::find_signature_in_file(&sig) {
+                    match cache_pdb::find_strong_signature_candidates(&meta, constants::SHELL32_PATH) {
                         Ok(cands) => {
                             if cands.is_empty() {
                                 println!("No candidates found in file.");
@@ -193,12 +197,15 @@ fn main() {
                             let chosen = cands[idx];
                             println!("Chosen candidate RVA: 0x{chosen:08x}");
                             // verify in-process bytes at chosen
-                            match cache_pdb::capture_process_bytes(chosen, sig.len()) {
+                            match cache_pdb::capture_process_bytes(chosen, meta.head.len() + meta.tail.len()) {
                                 Ok(cur) => {
-                                    if cur == sig {
-                                        println!("In-memory bytes match signature (OK)");
+                                    if cur.len() >= meta.head.len()
+                                        && cur[..meta.head.len()] == meta.head[..]
+                                        && (meta.tail.is_empty() || cur[meta.head.len()..] == meta.tail[..])
+                                    {
+                                        println!("In-memory bytes match cached anchors (OK)");
                                     } else {
-                                        println!("In-memory bytes differ from cached signature");
+                                        println!("In-memory bytes differ from cached anchors");
                                         print!("Proceed with injection anyway? (y/N): ");
                                         let _ = io::stdout().flush();
                                         let mut ans = String::new();
@@ -241,12 +248,14 @@ fn main() {
                                 if let Err(e) = fs::write(&rva_path, chosen.to_be_bytes()) {
                                     eprintln!("Failed writing cache rva: {:?}", e);
                                 } else {
-                                    // write meta with chosen signature captured now
-                                    let sig_now = cache_pdb::capture_process_bytes(chosen, sig.len()).unwrap_or_default();
+                                    // write meta with chosen anchors captured now
+                                    let sig_now = cache_pdb::capture_process_bytes(chosen, meta.head.len() + meta.tail.len()).unwrap_or_default();
                                     if let Ok(mut f) = fs::File::create(&meta_path) {
                                         let _ = writeln!(f, "0x{chosen:08x}");
-                                        let hexsig: String = sig_now.iter().map(|b| format!("{:02x}", b)).collect();
-                                        let _ = writeln!(f, "{hexsig}");
+                                        let head: String = sig_now.iter().take(meta.head.len()).map(|b| format!("{:02x}", b)).collect();
+                                        let tail: String = sig_now.iter().skip(meta.head.len()).take(meta.tail.len()).map(|b| format!("{:02x}", b)).collect();
+                                        let _ = writeln!(f, "{head}");
+                                        let _ = writeln!(f, "{tail}");
                                         println!("Saved cache: {}", rva_path.display());
                                     }
                                 }
