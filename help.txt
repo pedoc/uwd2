@@ -8,7 +8,6 @@ SUBCOMMANDS:
     inject          Removes the watermark by patching explorer.exe in memory.
                     Does not persist if explorer.exe or the system is restarted.
                     Use install-task to automate re-patching.
-	download-pdb    Downloads and caches shell32.pdb for an old GUID from a cache filename
     patch-rva <hex> Manually supply the RVA of CDesktopWatermark::s_DesktopBuildPaint,
                     cache it, and apply the patch. Use this when all automatic
                     methods fail (e.g. PDB not yet on symbol server).
